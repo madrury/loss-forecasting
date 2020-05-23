@@ -30,7 +30,6 @@ class LossDevelopmentCurveModel:
 
         for _ in range(1000):
             current_forecast_increments = np.diff(wb.weibull(ts, 1.0, *self.parameters[1:]), axis=1)
-            self.parameters[0] = np.sum(y_increments) / np.sum(current_forecast_increments)
 
             current_dalpha_increments = np.diff(wb.d_alpha_weibull(ts, *self.parameters), axis=1)
             current_dbeta_increments = np.diff(wb.d_beta_weibull(ts, *self.parameters), axis=1)
@@ -41,6 +40,7 @@ class LossDevelopmentCurveModel:
             ])
             penalty = self.shrinkage * (self.parameters[1:] - self.prior_means)
 
+            self.parameters[0] = np.sum(y_increments) / np.sum(current_forecast_increments)
             self.parameters[1:] = self.parameters[1:] + 0.1 * gradient - penalty
 
             self.log_likelihoods.append(
