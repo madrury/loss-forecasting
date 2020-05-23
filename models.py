@@ -29,10 +29,10 @@ class LossDevelopmentCurveModel:
         y_increments = np.diff(np.vstack([y[0:-1], y[1:]]).T, axis=1)
 
         for _ in range(1000):
-            current_forecast_increments = np.diff(wb.weibull(ts, 1.0, *self.parameters[1:]), axis=1)
+            current_forecast_increments = np.diff(wb.weibull(ts, *self.parameters[1:]), axis=1)
 
-            current_dalpha_increments = np.diff(wb.d_alpha_weibull(ts, *self.parameters), axis=1)
-            current_dbeta_increments = np.diff(wb.d_beta_weibull(ts, *self.parameters), axis=1)
+            current_dalpha_increments = np.diff(wb.d_alpha_weibull(ts, *self.parameters[1:]), axis=1)
+            current_dbeta_increments = np.diff(wb.d_beta_weibull(ts, *self.parameters[1:]), axis=1)
 
             gradient = np.array([
                 self.dl_dalpha(n, y_increments, current_forecast_increments, current_dalpha_increments),

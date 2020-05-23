@@ -62,7 +62,7 @@ class FraudForcastingDataSimulator:
         alpha: float,
         beta: float
     ) -> np.array:
-        gs = weibull(np.arange(n_obs), ultimate_loss, alpha, beta)
+        gs = ultimate_loss * weibull(np.arange(n_obs), alpha, beta)
         dgs = np.zeros(n_obs)
         dgs[1:] = np.diff(gs)
         dy = np.random.poisson(dgs)
