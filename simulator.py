@@ -36,7 +36,7 @@ class FraudForcastingDataSimulator:
 
     def simulate_one_random_group(self) -> pd.DataFrame:
         n_obs = np.random.randint(self.n_obs_min, self.n_obs_max)
-        ul = np.random.normal(loc=self.ultimate_loss_mean, scale=self.ultimate_loss_std)
+        ul = np.around(np.random.normal(loc=self.ultimate_loss_mean, scale=self.ultimate_loss_std))
         alpha = np.random.gamma(
             shape=self.alpha_mean**2 / self.alpha_std**2,
             scale=self.alpha_std**2 / self.alpha_mean
@@ -45,12 +45,14 @@ class FraudForcastingDataSimulator:
             shape=self.beta_mean**2 / self.beta_std**2,
             scale=self.beta_std**2 / self.beta_mean
         )
+        group = self.simulate_one_fixed_group(self.n_obs_max, ul, alpha, beta)
         return pd.DataFrame({
-            'ultimate_loss': ul,
+            'expected_ultimate_loss': ul,
+            'ultimate_loss': np.max(group),
             'alpha': alpha,
             'beta': beta,
-            't': np.arange(1, n_obs + 2),
-            'y': self.simulate_one_fixed_group(n_obs, ul, alpha, beta)
+            't': np.arange(0, n_obs),
+            'y': group[:n_obs]
         })
 
     def simulate_one_fixed_group(
@@ -60,8 +62,9 @@ class FraudForcastingDataSimulator:
         alpha: float,
         beta: float
     ) -> np.array:
-        dts = np.random.uniform(0.0, 1.0, size=n_obs)
-        ts = np.zeros(shape=n_obs + 1)
-        ts[1:] = n_obs * np.cumsum(dts) / np.sum(dts)
-        ys = weibull(ts, ultimate_loss, alpha, beta)
-        return ys
+        gs = weibull(np.arange(n_obs), ultimate_loss, alpha, beta)
+        dgs = np.zeros(n_obs)
+        dgs[1:] = np.diff(gs)
+        dy = np.random.poisson(dgs)
+        y = np.cumsum(dy)
+        return y
