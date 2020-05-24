@@ -28,44 +28,45 @@ class LossDevelopmentCurveModel:
         ts = np.vstack([t[0:-1], t[1:]]).T
         y_increments = np.diff(np.vstack([y[0:-1], y[1:]]).T, axis=1)
 
-        for _ in range(1000):
+        for _ in range(200):
             current_forecast_increments = np.diff(wb.weibull(ts, *self.parameters[1:]), axis=1)
 
             current_dalpha_increments = np.diff(wb.d_alpha_weibull(ts, *self.parameters[1:]), axis=1)
             current_dbeta_increments = np.diff(wb.d_beta_weibull(ts, *self.parameters[1:]), axis=1)
-            # current_d2alpha_increments = np.diff(wb.d2_alpha_weibull(ts, *self.parameters[1:]), axis=1)
-            # current_d2beta_increments = np.diff(wb.d2_beta_weibull(ts, *self.parameters[1:]), axis=1)
-            # current_dalpha_dbeta_increments = np.diff(
-            #     wb.d_alpha_d_beta_weibull(ts, *self.parameters[1:]), axis=1
-            # )
+            current_d2alpha_increments = np.diff(wb.d2_alpha_weibull(ts, *self.parameters[1:]), axis=1)
+            current_d2beta_increments = np.diff(wb.d2_beta_weibull(ts, *self.parameters[1:]), axis=1)
+            current_dalpha_dbeta_increments = np.diff(
+                wb.d_alpha_d_beta_weibull(ts, *self.parameters[1:]), axis=1
+            )
 
             gradient = np.array([
                 self.dl_dalpha(n, y_increments, current_forecast_increments, current_dalpha_increments),
                 self.dl_dbeta(n, y_increments, current_forecast_increments, current_dbeta_increments)
             ])
-            penalty = self.shrinkage * (self.parameters[1:] - self.prior_means)
-            gradient += penalty
 
-            # current_d2l_d2alpha = self.d2l_d2alpha(
-            #     n, y_increments, current_forecast_increments,
-            #     current_dalpha_increments, current_d2alpha_increments
-            # )
-            # current_d2l_d2beta = self.d2l_d2beta(
-            #     n, y_increments, current_forecast_increments,
-            #     current_dbeta_increments, current_d2beta_increments
-            # )
-            # current_d2l_dalpha_dbeta = self.d2l_dalpha_dbeta(
-            #     n, y_increments, current_forecast_increments,
-            #     current_dalpha_increments, current_dbeta_increments, current_dalpha_dbeta_increments
-            # )
-            # hessian = np.array([
-            #     [current_d2l_d2alpha - self.shrinkage, current_d2l_dalpha_dbeta],
-            #     [current_d2l_dalpha_dbeta, current_d2l_d2beta - self.shrinkage]
-            # ])
+            current_d2l_d2alpha = self.d2l_d2alpha(
+                n, y_increments, current_forecast_increments,
+                current_dalpha_increments, current_d2alpha_increments
+            )
+            current_d2l_d2beta = self.d2l_d2beta(
+                n, y_increments, current_forecast_increments,
+                current_dbeta_increments, current_d2beta_increments
+            )
+            current_d2l_dalpha_dbeta = self.d2l_dalpha_dbeta(
+                n, y_increments, current_forecast_increments,
+                current_dalpha_increments, current_dbeta_increments, current_dalpha_dbeta_increments
+            )
+            hessian = np.array([
+                [current_d2l_d2alpha - self.shrinkage, current_d2l_dalpha_dbeta],
+                [current_d2l_dalpha_dbeta, current_d2l_d2beta - self.shrinkage]
+            ])
+
 
             self.parameters[0] = np.sum(y_increments) / np.sum(current_forecast_increments)
-            self.parameters[1:] += gradient
-            # self.parameters[1:] -= 0.1 * np.linalg.solve(hessian, gradient)
+
+            penalty = self.shrinkage * (self.parameters[1:] - self.prior_means)
+            # self.parameters[1:] += 0.1 * gradient - penalty
+            self.parameters[1:] -= 0.01 * np.linalg.solve(hessian - np.diag([self.shrinkage, self.shrinkage]), gradient - penalty)
 
             self.log_likelihoods.append(
                 self.likelihood(n, y_increments, current_forecast_increments)
