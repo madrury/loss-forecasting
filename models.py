@@ -21,20 +21,25 @@ class LossDevelopmentCurveModel:
                  alpha_prior_std=30.0,
                  beta_prior_mean=1.5,
                  beta_prior_std=5.0,
-                 shrinkage=0.1):
+                 shrinkage=0.1,
+                 max_iter=2500,
+                 rtol=0.00001):
         self.learning_rate = learning_rate
         self.parameters = np.array([initial_ul, initial_alpha, initial_beta])
         self.prior_means = np.array([ul_prior_mean, alpha_prior_mean, beta_prior_mean])
         self.shrinkage = shrinkage * np.array([2/ul_prior_std, 2/alpha_prior_mean, 2/beta_prior_std])
+        self.max_iter = max_iter
+        self.rtol = rtol
         self.log_likelihoods = []
+        self.losses = []
 
     def fit(self, t: np.array, y: np.array):
+        assert len(t) == len(y)
         n = len(y)
-
         ts = np.vstack([t[0:-1], t[1:]]).T
         y_increments = np.diff(np.vstack([y[0:-1], y[1:]]).T, axis=1)
 
-        for _ in range(2500):
+        for i in range(self.max_iter):
             current_forecast_increments = np.diff(wb.weibull(ts, *self.parameters[1:]), axis=1)
             current_dalpha_increments = np.diff(wb.d_alpha_weibull(ts, *self.parameters[1:]), axis=1)
             current_dbeta_increments = np.diff(wb.d_beta_weibull(ts, *self.parameters[1:]), axis=1)
@@ -55,6 +60,12 @@ class LossDevelopmentCurveModel:
             self.log_likelihoods.append(
                 self.likelihood(n, y_increments, current_forecast_increments)
             )
+            self.losses.append(
+                self.loss(n, y_increments, current_forecast_increments)
+            )
+
+            if i > 2 and np.abs(self.losses[-1] / self.losses[-2] - 1) < self.rtol:
+                break
 
         # current_d2l_d2u = self.d2l_d2u(n, y_increments)
         # current_d2l_du_dalpha = self.d2l_du_dalpha(n, current_dalpha_increments)
@@ -89,6 +100,11 @@ class LossDevelopmentCurveModel:
             - self.parameters[0] * forecast_increments
         )
         return (1/n) * np.sum(lhds)
+
+    def loss(self, n, y_increments, forecast_increments):
+        neg_log_lik = - self.likelihood(n, y_increments, forecast_increments)
+        penalty = 0.5 * np.sum(self.shrinkage * (self.parameters - self.prior_means)**2)
+        return neg_log_lik + (1/n) * penalty
 
     # First derivatives of the log-likelihood.
     def dl_du(self, n, y_increments, forecast_increments):
