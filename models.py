@@ -11,16 +11,18 @@ import weibull as wb
 class LossDevelopmentCurveModel:
 
     def __init__(self,
+                 learning_rate=0.01,
                  initial_ul=100.0,
                  initial_alpha=20.0,
                  initial_beta=1.0,
-                 ul_prior_mean=100.0,
-                 ul_prior_std=20.0,
+                 ul_prior_mean=150.0,
+                 ul_prior_std=50.0,
                  alpha_prior_mean=30.0,
                  alpha_prior_std=30.0,
                  beta_prior_mean=1.5,
                  beta_prior_std=5.0,
                  shrinkage=0.1):
+        self.learning_rate = learning_rate
         self.parameters = np.array([initial_ul, initial_alpha, initial_beta])
         self.prior_means = np.array([ul_prior_mean, alpha_prior_mean, beta_prior_mean])
         self.shrinkage = shrinkage * np.array([2/ul_prior_std, 2/alpha_prior_mean, 2/beta_prior_std])
@@ -32,16 +34,10 @@ class LossDevelopmentCurveModel:
         ts = np.vstack([t[0:-1], t[1:]]).T
         y_increments = np.diff(np.vstack([y[0:-1], y[1:]]).T, axis=1)
 
-        for _ in range(1000):
+        for _ in range(2500):
             current_forecast_increments = np.diff(wb.weibull(ts, *self.parameters[1:]), axis=1)
-
             current_dalpha_increments = np.diff(wb.d_alpha_weibull(ts, *self.parameters[1:]), axis=1)
             current_dbeta_increments = np.diff(wb.d_beta_weibull(ts, *self.parameters[1:]), axis=1)
-            # current_d2alpha_increments = np.diff(wb.d2_alpha_weibull(ts, *self.parameters[1:]), axis=1)
-            # current_d2beta_increments = np.diff(wb.d2_beta_weibull(ts, *self.parameters[1:]), axis=1)
-            # current_dalpha_dbeta_increments = np.diff(
-            #     wb.d_alpha_d_beta_weibull(ts, *self.parameters[1:]), axis=1
-            # )
 
             gradient = np.array([
                 self.dl_du(n, y_increments, current_forecast_increments),
@@ -49,36 +45,43 @@ class LossDevelopmentCurveModel:
                 self.dl_dbeta(n, y_increments, current_forecast_increments, current_dbeta_increments)
             ])
 
-            # current_d2l_d2u = self.d2l_d2u(n, y_increments)
-            # current_d2l_du_dalpha = self.d2l_du_dalpha(n, current_dalpha_increments)
-            # current_d2l_du_dbeta = self.d2l_du_dbeta(n, current_dbeta_increments)
-            # current_d2l_d2alpha = self.d2l_d2alpha(
-            #     n, y_increments, current_forecast_increments,
-            #     current_dalpha_increments, current_d2alpha_increments
-            # )
-            # current_d2l_d2beta = self.d2l_d2beta(
-            #     n, y_increments, current_forecast_increments,
-            #     current_dbeta_increments, current_d2beta_increments
-            # )
-            # current_d2l_dalpha_dbeta = self.d2l_dalpha_dbeta(
-            #     n, y_increments, current_forecast_increments,
-            #     current_dalpha_increments, current_dbeta_increments, current_dalpha_dbeta_increments
-            # )
-            # hessian = np.array([
-            #     [current_d2l_d2u, current_d2l_du_dalpha, current_d2l_du_dbeta],
-            #     [current_d2l_du_dalpha, current_d2l_d2alpha, current_d2l_dalpha_dbeta],
-            #     [current_d2l_du_dbeta, current_d2l_dalpha_dbeta, current_d2l_d2beta]
-            # ])
-
             penalty = self.shrinkage * (self.parameters - self.prior_means)
-
-            self.parameters[0] = np.sum(y_increments) / np.sum(current_forecast_increments) - penalty[0]
-            self.parameters[0] = np.min([np.max([self.parameters[0], 5.0]), 200.0])
-            self.parameters[1:] += 0.1 * gradient[1:] - penalty[1:]
+            self.parameters[0] += self.learning_rate * (
+                np.sum(y_increments) / np.sum(current_forecast_increments) - self.parameters[0]
+            ) - penalty[0]
+            # self.parameters[0] = np.min([np.max([self.parameters[0], 5.0]), 200.0])
+            self.parameters[1:] += self.learning_rate * gradient[1:] - penalty[1:]
 
             self.log_likelihoods.append(
                 self.likelihood(n, y_increments, current_forecast_increments)
             )
+
+        # current_d2l_d2u = self.d2l_d2u(n, y_increments)
+        # current_d2l_du_dalpha = self.d2l_du_dalpha(n, current_dalpha_increments)
+        # current_d2l_du_dbeta = self.d2l_du_dbeta(n, current_dbeta_increments)
+        # current_d2l_d2alpha = self.d2l_d2alpha(
+        #     n, y_increments, current_forecast_increments,
+        #     current_dalpha_increments, current_d2alpha_increments
+        # )
+        # current_d2l_d2beta = self.d2l_d2beta(
+        #     n, y_increments, current_forecast_increments,
+        #     current_dbeta_increments, current_d2beta_increments
+        # )
+        # current_d2l_dalpha_dbeta = self.d2l_dalpha_dbeta(
+        #     n, y_increments, current_forecast_increments,
+        #     current_dalpha_increments, current_dbeta_increments, current_dalpha_dbeta_increments
+        # )
+        # hessian = np.array([
+        #     [current_d2l_d2u, current_d2l_du_dalpha, current_d2l_du_dbeta],
+        #     [current_d2l_du_dalpha, current_d2l_d2alpha, current_d2l_dalpha_dbeta],
+        #     [current_d2l_du_dbeta, current_d2l_dalpha_dbeta, current_d2l_d2beta]
+        # ])
+
+        # current_d2alpha_increments = np.diff(wb.d2_alpha_weibull(ts, *self.parameters[1:]), axis=1)
+        # current_d2beta_increments = np.diff(wb.d2_beta_weibull(ts, *self.parameters[1:]), axis=1)
+        # current_dalpha_dbeta_increments = np.diff(
+        #     wb.d_alpha_d_beta_weibull(ts, *self.parameters[1:]), axis=1
+        # )
 
     def likelihood(self, n, y_increments, forecast_increments):
         lhds = (
