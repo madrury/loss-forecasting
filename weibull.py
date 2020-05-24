@@ -14,6 +14,7 @@ def d_beta_weibull(t: np.array, alpha: float, beta: float) -> np.array:
     # t=0, so we silence the warning then infer the zero.
     with np.errstate(divide='ignore'):
         log_factor = np.nan_to_num(np.log(t / alpha))
+        log_factor[t == 0] = -100
     ratio_power = (t / alpha)**beta
     return np.exp(- ratio_power) * ratio_power * log_factor
 
@@ -24,11 +25,13 @@ def d2_alpha_weibull(t: np.array, alpha: float, beta: float):
 def d2_beta_weibull(t: np.array, alpha: float, beta: float):
     with np.errstate(divide='ignore'):
         log_factor = np.nan_to_num(np.log(t / alpha))
+        log_factor[t == 0] = -100
     ratio_power = (t / alpha)**beta
     return - ratio_power * np.exp(- ratio_power) * log_factor**2 * (ratio_power - 1)
 
 def d_alpha_d_beta_weibull(t: np.array, alpha: float, beta: float):
     with np.errstate(divide='ignore'):
         log_factor = np.nan_to_num(np.log(t / alpha))
+        log_factor[t == 0] = -100
     ratio_power = (t / alpha)**beta
     return (1 / alpha) * ratio_power * np.exp(- ratio_power) * (beta * ratio_power * log_factor - beta * log_factor - 1)
