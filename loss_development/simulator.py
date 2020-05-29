@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from weibull import weibull
+from loss_development.weibull import weibull
 
 
 class FraudForcastingDataSimulator:

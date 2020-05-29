@@ -4,12 +4,55 @@ import pandas as pd
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
 
-# np.seterr(all='raise')
+import loss_development.weibull as wb
 
-import weibull as wb
 
 class LossDevelopmentCurveModel:
+    """An implementation of the loss forecasting model from this paper:
 
+        https://www.casact.org/pubs/forum/03fforum/03ff041.pdf
+
+    This model takes a sequence of loss values y_i observed over discrete
+    time increments t_i and fits a curve of the form:
+
+        f(t) = ultimate_loss * weibull_pdf(t; alpha, beta)
+
+    by maximum likelihood, optimizing the parameters (ultimalte_loss, alpha,
+    beta). The probability model underlying the application of maximum
+    likelihood is:
+
+        y_{i+1} - y_i ~ Poisson(lambda=(f(t+1) - f(t)))
+
+    The model is fit with a modified version of grandient ascent. Parameters
+    alpha and beta are fit iteratively by moving along the gradient, but the
+    partial derivative d likelihood / d ultimate_loss has an analytically
+    calulcatable zero, so in our descent we solve for the ultimate_loss
+    explicitly that zero's out the partial derivative.
+
+    Parameters
+    ----------
+    learning_rate: float
+      Learning rate for the gradient ascent.
+
+    initial_ul, initial_alpha, initial_beta: float
+      Initial values for parameters to start the optimization.
+
+    ul_prior_mean, alpha_prior_mean, beta_prior_mean: float
+      Parameter values to regularize the model towards during optimization.
+
+    ul_prior_std, alpha_prior_std, beta_prior_std: float
+      Inverely related to the strengths of regularization to apply when
+      shrinking these parameters towards their prior values.
+
+    shrinkate: floar
+      Overall strength of regulariation to apply to all three parameters.
+
+    max_iter: int
+      Maximum number of gradient descent iterations.
+
+    trol: float
+      Relative tolerance of model convergence criteria.
+    """
     def __init__(self,
                  learning_rate=0.05,
                  initial_ul=150.0,
@@ -21,9 +64,9 @@ class LossDevelopmentCurveModel:
                  alpha_prior_std=30.0,
                  beta_prior_mean=1.5,
                  beta_prior_std=5.0,
-                 shrinkage=0.1,
-                 max_iter=5000,
-                 rtol=0.000001):
+                 shrinkage=0.01,
+                 max_iter=10000,
+                 rtol=1.0e-6):
         self.learning_rate = learning_rate
         self.parameters = np.array([initial_ul, initial_alpha, initial_beta])
         self.prior_means = np.array([ul_prior_mean, alpha_prior_mean, beta_prior_mean])
@@ -52,10 +95,14 @@ class LossDevelopmentCurveModel:
 
             penalty = self.shrinkage * (self.parameters - self.prior_means)
             self.parameters[0] += self.learning_rate * (
+                # This term is the zero of the ultimate loss component of the
+                # gradient. In this dimension, we do not use straightforward
+                # gradient descent, instead we immediately update to the zero
+                # of the gradient component.
                 np.sum(y_increments) / np.sum(current_forecast_increments) - self.parameters[0]
-            ) - penalty[0]
-            # self.parameters[0] = np.min([np.max([self.parameters[0], 5.0]), 200.0])
-            self.parameters[1:] += self.learning_rate * gradient[1:] - penalty[1:]
+                 - penalty[0])
+            # self.parameters[0] = np.min([np.max([self.parameters[0], 100.0]), 50000.0])
+            self.parameters[1:] += self.learning_rate * (gradient[1:] - penalty[1:])
 
             self.log_likelihoods.append(
                 self.likelihood(n, y_increments, current_forecast_increments)
@@ -64,7 +111,7 @@ class LossDevelopmentCurveModel:
                 self.loss(n, y_increments, current_forecast_increments)
             )
 
-            if i > 2 and np.abs(self.losses[-1] / self.losses[-2] - 1) < self.rtol:
+            if i > 2 and np.abs(self.log_likelihoods[-1] / self.log_likelihoods[-2] - 1) < self.rtol:
                 break
 
         final_ultimate_forecast_increments = np.diff(self.forecast(t))
@@ -100,8 +147,6 @@ class LossDevelopmentCurveModel:
     def forecast_parameter_variances(self, t):
         covariance_matrix = - self.overdispersion * np.linalg.inv(self.n * self.final_hessian)
 
-        ts = np.vstack([t[0:-1], t[1:]]).T
-
         final_dul = wb.weibull(t, *self.parameters[1:])
         final_dalpha = wb.d_alpha_weibull(t, *self.parameters[1:])
         final_dbeta = wb.d_beta_weibull(t, *self.parameters[1:])
@@ -119,7 +164,6 @@ class LossDevelopmentCurveModel:
         # values, which leads to negative variance estimates. We take a
         # conservative approach here, and use the maximal value of the
         # estimated variance to fill in any such issues.
-        print(forecast_increment_variances)
         return np.maximum.accumulate(np.nan_to_num(forecast_increment_variances))
 
     # First derivatives of the log-likelihood.
