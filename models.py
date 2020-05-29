@@ -36,13 +36,13 @@ class LossDevelopmentCurveModel:
     def fit(self, t: np.array, y: np.array):
         assert len(t) == len(y)
         n = len(y)
+        y_increments = np.diff(y)
         ts = np.vstack([t[0:-1], t[1:]]).T
-        y_increments = np.diff(np.vstack([y[0:-1], y[1:]]).T, axis=1)
 
         for i in range(self.max_iter):
-            current_forecast_increments = np.diff(wb.weibull(ts, *self.parameters[1:]), axis=1)
-            current_dalpha_increments = np.diff(wb.d_alpha_weibull(ts, *self.parameters[1:]), axis=1)
-            current_dbeta_increments = np.diff(wb.d_beta_weibull(ts, *self.parameters[1:]), axis=1)
+            current_forecast_increments = np.diff(wb.weibull(t, *self.parameters[1:]))
+            current_dalpha_increments = np.diff(wb.d_alpha_weibull(t, *self.parameters[1:]))
+            current_dbeta_increments = np.diff(wb.d_beta_weibull(t, *self.parameters[1:]))
 
             gradient = np.array([
                 self.dl_du(n, y_increments, current_forecast_increments),
@@ -54,7 +54,7 @@ class LossDevelopmentCurveModel:
             self.parameters[0] += self.learning_rate * (
                 np.sum(y_increments) / np.sum(current_forecast_increments) - self.parameters[0]
             ) - penalty[0]
-            self.parameters[0] = np.min([np.max([self.parameters[0], 5.0]), 200.0])
+            # self.parameters[0] = np.min([np.max([self.parameters[0], 5.0]), 200.0])
             self.parameters[1:] += self.learning_rate * gradient[1:] - penalty[1:]
 
             self.log_likelihoods.append(
@@ -67,12 +67,12 @@ class LossDevelopmentCurveModel:
             if i > 2 and np.abs(self.losses[-1] / self.losses[-2] - 1) < self.rtol:
                 break
 
-        final_forecast_increments = np.diff(wb.weibull(ts, *self.parameters[1:]), axis=1)
-        self.overdispersion = (1 / (n - 3)) * np.sum(
-            (self.parameters[0] * final_forecast_increments - y_increments)**2
-                / (self.parameters[0] * final_forecast_increments)
+        final_ultimate_forecast_increments = np.diff(self.forecast(t))
+        self.overdispersion = (1 / n) * np.sum(
+            (final_ultimate_forecast_increments - y_increments)**2 / (final_ultimate_forecast_increments)
         )
-
+        self.final_hessian = self.hessian(n, ts, y_increments)
+        self.n = n
 
     def likelihood(self, n, y_increments, forecast_increments):
         lhds = (
@@ -92,61 +92,35 @@ class LossDevelopmentCurveModel:
     def forecast_interval(self, t):
         forecast_diffs = np.zeros(len(t))
         forecast_diffs[1:] = np.diff(self.forecast(t))
-        return np.sqrt(self.overdispersion * np.cumsum(forecast_diffs))
-
-    def hessian(self, n, ts, y_increments):
-        # Partial derivatives of forecast increments wrt parameters.
-        final_forecast_increments = np.diff(wb.weibull(ts, *self.parameters[1:]), axis=1)
-        final_dalpha_increments = np.diff(wb.d_alpha_weibull(ts, *self.parameters[1:]), axis=1)
-        final_dbeta_increments = np.diff(wb.d_beta_weibull(ts, *self.parameters[1:]), axis=1)
-        final_d2alpha_increments = np.diff(wb.d2_alpha_weibull(ts, *self.parameters[1:]), axis=1)
-        final_d2beta_increments = np.diff(wb.d2_beta_weibull(ts, *self.parameters[1:]), axis=1)
-        final_dalpha_dbeta_increments = np.diff(
-            wb.d_alpha_d_beta_weibull(ts, *self.parameters[1:]), axis=1
+        return (
+            np.sqrt(self.overdispersion * np.cumsum(forecast_diffs))
+            + np.sqrt(self.forecast_parameter_variances(t))
         )
-        # Second partial derivatives of likelihood with respect to parameters.
-        final_d2l_d2u = self.d2l_d2u(n, y_increments)
-        final_d2l_du_dalpha = self.d2l_du_dalpha(n, final_dalpha_increments)
-        final_d2l_du_dbeta = self.d2l_du_dbeta(n, final_dbeta_increments)
-        final_d2l_d2alpha = self.d2l_d2alpha(
-            n, y_increments, final_forecast_increments,
-            final_dalpha_increments, final_d2alpha_increments
+
+    def forecast_parameter_variances(self, t):
+        covariance_matrix = - self.overdispersion * np.linalg.inv(self.n * self.final_hessian)
+
+        ts = np.vstack([t[0:-1], t[1:]]).T
+
+        final_dul = wb.weibull(t, *self.parameters[1:])
+        final_dalpha = wb.d_alpha_weibull(t, *self.parameters[1:])
+        final_dbeta = wb.d_beta_weibull(t, *self.parameters[1:])
+
+        dforecast_increments = np.array([
+            final_dul,
+            self.parameters[0] * final_dalpha,
+            self.parameters[0] * final_dbeta
+        ]).squeeze()
+
+        forecast_increment_variances = np.einsum(
+            'ij,jk,ki->i', dforecast_increments.T, covariance_matrix, dforecast_increments
         )
-        final_d2l_d2beta = self.d2l_d2beta(
-            n, y_increments, final_forecast_increments,
-            final_dbeta_increments, final_d2beta_increments
-        )
-        final_d2l_dalpha_dbeta = self.d2l_dalpha_dbeta(
-            n, y_increments, final_forecast_increments,
-            final_dalpha_increments, final_dbeta_increments, final_dalpha_dbeta_increments
-        )
-        hessian = np.array([
-            [final_d2l_d2u, final_d2l_du_dalpha, final_d2l_du_dbeta],
-            [final_d2l_du_dalpha, final_d2l_d2alpha, final_d2l_dalpha_dbeta],
-            [final_d2l_du_dbeta, final_d2l_dalpha_dbeta, final_d2l_d2beta]
-        ])
-        return hessian
-
-    def parameter_variances(self):
-        pass
-        # hessian = self.hessian(n, ts, y_increments)
-        # covariance_matrix = - self.overdispersion * np.linalg.inv(n * hessian)
-
-        # t = np.arange(100)
-        # ts = np.vstack([t[0:-1], t[1:]]).T
-
-        # final_dul = wb.weibull(t, *self.parameters[1:])
-        # final_dalpha = wb.d_alpha_weibull(t, *self.parameters[1:])
-        # final_dbeta = wb.d_beta_weibull(t, *self.parameters[1:])
-        # dforecast_increments = np.array([
-        #     final_dul,
-        #     self.parameters[0] * final_dalpha,
-        #     self.parameters[0] * final_dbeta
-        # ]).squeeze()
-
-        # forecast_increment_variances = np.einsum(
-        #     'ij,jk,ki->i', dforecast_increments.T, covariance_matrix, dforecast_increments
-        # )
+        # We sometimes get a non-definate hessian at the final parameter
+        # values, which leads to negative variance estimates. We take a
+        # conservative approach here, and use the maximal value of the
+        # estimated variance to fill in any such issues.
+        print(forecast_increment_variances)
+        return np.maximum.accumulate(np.nan_to_num(forecast_increment_variances))
 
     # First derivatives of the log-likelihood.
     def dl_du(self, n, y_increments, forecast_increments):
@@ -199,3 +173,36 @@ class LossDevelopmentCurveModel:
             - self.parameters[0] * dalpha_dbeta_increments
         )
         return (1/n) * np.sum(dalpha_dbeta)
+
+    def hessian(self, n, ts, y_increments):
+        # Partial derivatives of forecast increments wrt parameters.
+        final_forecast_increments = np.diff(wb.weibull(ts, *self.parameters[1:]), axis=1)
+        final_dalpha_increments = np.diff(wb.d_alpha_weibull(ts, *self.parameters[1:]), axis=1)
+        final_dbeta_increments = np.diff(wb.d_beta_weibull(ts, *self.parameters[1:]), axis=1)
+        final_d2alpha_increments = np.diff(wb.d2_alpha_weibull(ts, *self.parameters[1:]), axis=1)
+        final_d2beta_increments = np.diff(wb.d2_beta_weibull(ts, *self.parameters[1:]), axis=1)
+        final_dalpha_dbeta_increments = np.diff(
+            wb.d_alpha_d_beta_weibull(ts, *self.parameters[1:]), axis=1
+        )
+        # Second partial derivatives of likelihood with respect to parameters.
+        final_d2l_d2u = self.d2l_d2u(n, y_increments)
+        final_d2l_du_dalpha = self.d2l_du_dalpha(n, final_dalpha_increments)
+        final_d2l_du_dbeta = self.d2l_du_dbeta(n, final_dbeta_increments)
+        final_d2l_d2alpha = self.d2l_d2alpha(
+            n, y_increments, final_forecast_increments,
+            final_dalpha_increments, final_d2alpha_increments
+        )
+        final_d2l_d2beta = self.d2l_d2beta(
+            n, y_increments, final_forecast_increments,
+            final_dbeta_increments, final_d2beta_increments
+        )
+        final_d2l_dalpha_dbeta = self.d2l_dalpha_dbeta(
+            n, y_increments, final_forecast_increments,
+            final_dalpha_increments, final_dbeta_increments, final_dalpha_dbeta_increments
+        )
+        hessian = np.array([
+            [final_d2l_d2u, final_d2l_du_dalpha, final_d2l_du_dbeta],
+            [final_d2l_du_dalpha, final_d2l_d2alpha, final_d2l_dalpha_dbeta],
+            [final_d2l_du_dbeta, final_d2l_dalpha_dbeta, final_d2l_d2beta]
+        ])
+        return hessian

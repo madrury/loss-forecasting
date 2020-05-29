@@ -11,7 +11,8 @@ def d_alpha_weibull(t: np.array, alpha: float, beta: float) -> np.array:
 def d_beta_weibull(t: np.array, alpha: float, beta: float) -> np.array:
     # When t=0 this will be a logarithm of zero, which will throw a divide by
     # zero warning when computing the logarithm. The pardial d/dbeta is zero at
-    # t=0, so we silence the warning then infer the zero.
+    # t=0, so we silence the warning then infer the zero by setting a logarithm
+    # term to a large negative number.
     with np.errstate(divide='ignore'):
         log_factor = np.nan_to_num(np.log(t / alpha))
         log_factor[t == 0] = -100
