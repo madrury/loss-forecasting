@@ -65,16 +65,20 @@ class LossDevelopmentCurveModel:
                  initial_ultimate_loss=150.0,
                  initial_alpha=20.0,
                  initial_beta=1.0,
+                 ultimate_loss_prior_mean=150.0,
+                 ultimate_loss_prior_std=50.0,
                  alpha_prior_mean=30.0,
                  alpha_prior_std=30.0,
                  beta_prior_mean=1.5,
                  beta_prior_std=5.0,
-                 shrinkage=0.01,
+                 shrinkage=0.1,
                  max_iter=10000,
                  rtol=1.0e-6):
         self.learning_rate = learning_rate
         self.parameters = np.array([initial_alpha, initial_beta])
         self.ultimate_losses: np.array
+        self.ultimate_loss_prior_mean = ultimate_loss_prior_mean
+        self.ultimate_loss_prior_std = ultimate_loss_prior_std
         self.prior_means = np.array([alpha_prior_mean, beta_prior_mean])
         self.shrinkage = shrinkage * np.array([2/alpha_prior_mean, 2/beta_prior_std])
         self.max_iter = max_iter
@@ -91,7 +95,9 @@ class LossDevelopmentCurveModel:
         # We keep both the individual ultimate losses in a small array, and
         # explode the ultmimate losses into an array with the same shape as the
         # data. Both are useful in different circumsances.
-        self.ultimate_losses = np.full(np.unique(groups).shape, 150.0)
+        self.ultimate_losses = np.full(self.unique_groups.shape, 150.0)
+        print(self.ultimate_losses.shape)
+        print(self.group_counts.shape)
         self.ultimate_losses_exploded = np.repeat(self.ultimate_losses, self.group_counts - 1)
         y_increments = diff_within_groups(y, groups)
 
@@ -135,13 +141,14 @@ class LossDevelopmentCurveModel:
             forecast_increments_group = forecast_increments[
                 self.group_difference_counts[idx]:self.group_difference_counts[idx+1]
             ]
+            penalty = (1 / self.ultimate_loss_prior_std) * (self.ultimate_losses[idx] - self.ultimate_loss_prior_mean)
             self.ultimate_losses[idx] += self.learning_rate * (
                 # This term is the zero of the ultimate loss component of the
                 # gradient. In this dimension, we do not use straightforward
                 # gradient descent, instead we immediately update to the zero
                 # of the gradient component.
                 np.sum(y_increments_group) / np.sum(forecast_increments_group) - self.ultimate_losses[idx]
-            )
+            ) - (1 / self.group_counts[idx]) * penalty
 
     def likelihood(self, y_increments, forecast_increments):
         lhds = (
