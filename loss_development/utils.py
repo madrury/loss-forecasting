@@ -11,3 +11,6 @@ def count_elements_in_groups(groups):
         np.where(np.diff(groups) == 1)[0] + 1,
         [len(groups)]
     ]))
+
+def count_elements_in_group_differences(group_counts):
+    return np.concatenate([[0], np.cumsum(group_counts - 1)])

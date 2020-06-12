@@ -1,3 +1,5 @@
+from typing import List
+
 import numpy as np
 import pandas as pd
 
@@ -5,6 +7,11 @@ import statsmodels.api as sm
 import statsmodels.formula.api as smf
 
 import loss_development.weibull as wb
+from loss_development.utils import (
+    diff_within_groups,
+    count_elements_in_groups,
+    count_elements_in_group_differences
+)
 
 
 class LossDevelopmentCurveModel:
@@ -55,11 +62,9 @@ class LossDevelopmentCurveModel:
     """
     def __init__(self,
                  learning_rate=0.05,
-                 initial_ul=150.0,
+                 initial_ultimate_loss=150.0,
                  initial_alpha=20.0,
                  initial_beta=1.0,
-                 ul_prior_mean=150.0,
-                 ul_prior_std=40.0,
                  alpha_prior_mean=30.0,
                  alpha_prior_std=30.0,
                  beta_prior_mean=1.5,
@@ -68,40 +73,43 @@ class LossDevelopmentCurveModel:
                  max_iter=10000,
                  rtol=1.0e-6):
         self.learning_rate = learning_rate
-        self.parameters = np.array([initial_ul, initial_alpha, initial_beta])
-        self.prior_means = np.array([ul_prior_mean, alpha_prior_mean, beta_prior_mean])
-        self.shrinkage = shrinkage * np.array([2/ul_prior_std, 2/alpha_prior_mean, 2/beta_prior_std])
+        self.parameters = np.array([initial_alpha, initial_beta])
+        self.ultimate_losses: np.array
+        self.prior_means = np.array([alpha_prior_mean, beta_prior_mean])
+        self.shrinkage = shrinkage * np.array([2/alpha_prior_mean, 2/beta_prior_std])
         self.max_iter = max_iter
         self.rtol = rtol
-        self.log_likelihoods = []
-        self.losses = []
+        self.log_likelihoods: List[float] = []
+        self.losses: List[float] = []
 
-    def fit(self, t: np.array, y: np.array):
-        assert len(t) == len(y)
+    def fit(self, t: np.array, y: np.array, groups: np.array):
         self.n = len(y)
-        y_increments = np.diff(y)
+        self.unique_groups = np.unique(groups)
+        self.group_counts = count_elements_in_groups(groups)
+        self.group_difference_counts = count_elements_in_group_differences(self.group_counts)
+
+        # We keep both the individual ultimate losses in a small array, and
+        # explode the ultmimate losses into an array with the same shape as the
+        # data. Both are useful in different circumsances.
+        self.ultimate_losses = np.full(np.unique(groups).shape, 150.0)
+        self.ultimate_losses_exploded = np.repeat(self.ultimate_losses, self.group_counts - 1)
+        y_increments = diff_within_groups(y, groups)
 
         for i in range(self.max_iter):
-            current_forecast_increments = np.diff(wb.weibull(t, *self.parameters[1:]))
-            current_dalpha_increments = np.diff(wb.d_alpha_weibull(t, *self.parameters[1:]))
-            current_dbeta_increments = np.diff(wb.d_beta_weibull(t, *self.parameters[1:]))
+            current_forecast_increments = diff_within_groups(wb.weibull(t, *self.parameters), groups)
+            current_dalpha_increments = diff_within_groups(wb.d_alpha_weibull(t, *self.parameters), groups)
+            current_dbeta_increments = diff_within_groups(wb.d_beta_weibull(t, *self.parameters), groups)
 
             gradient = np.array([
-                self.dl_du(y_increments, current_forecast_increments),
                 self.dl_dalpha(y_increments, current_forecast_increments, current_dalpha_increments),
                 self.dl_dbeta(y_increments, current_forecast_increments, current_dbeta_increments)
             ])
 
             penalty = self.shrinkage * (self.parameters - self.prior_means)
-            self.parameters[0] += self.learning_rate * (
-                # This term is the zero of the ultimate loss component of the
-                # gradient. In this dimension, we do not use straightforward
-                # gradient descent, instead we immediately update to the zero
-                # of the gradient component.
-                np.sum(y_increments) / np.sum(current_forecast_increments) - self.parameters[0]
-                 - penalty[0])
+            self.update_ultimate_losses(y_increments, current_forecast_increments)
+            self.ultimate_losses_exploded = np.repeat(self.ultimate_losses, self.group_counts - 1)
             # self.parameters[0] = np.min([np.max([self.parameters[0], 100.0]), 50000.0])
-            self.parameters[1:] += self.learning_rate * (gradient[1:] - penalty[1:])
+            self.parameters += self.learning_rate * (gradient - penalty)
 
             self.log_likelihoods.append(
                 self.likelihood(y_increments, current_forecast_increments)
@@ -113,16 +121,32 @@ class LossDevelopmentCurveModel:
             if i > 2 and np.abs(self.log_likelihoods[-1] / self.log_likelihoods[-2] - 1) < self.rtol:
                 break
 
-        final_ultimate_forecast_increments = np.diff(self.forecast(t))
-        self.overdispersion = (1 / self.n) * np.sum(
-            (final_ultimate_forecast_increments - y_increments)**2 / (final_ultimate_forecast_increments)
-        )
-        self.final_hessian = self.hessian(t, y_increments)
+        # final_ultimate_forecast_increments = np.diff(self.forecast(t))
+        # self.overdispersion = (1 / self.n) * np.sum(
+        #     (final_ultimate_forecast_increments - y_increments)**2 / (final_ultimate_forecast_increments)
+        # )
+        # self.final_hessian = self.hessian(t, y_increments)
+
+    def update_ultimate_losses(self, y_increments, forecast_increments):
+        for idx, group in enumerate(self.unique_groups):
+            y_increments_group = y_increments[
+                self.group_difference_counts[idx]:self.group_difference_counts[idx+1]
+            ]
+            forecast_increments_group = forecast_increments[
+                self.group_difference_counts[idx]:self.group_difference_counts[idx+1]
+            ]
+            self.ultimate_losses[idx] += self.learning_rate * (
+                # This term is the zero of the ultimate loss component of the
+                # gradient. In this dimension, we do not use straightforward
+                # gradient descent, instead we immediately update to the zero
+                # of the gradient component.
+                np.sum(y_increments_group) / np.sum(forecast_increments_group) - self.ultimate_losses[idx]
+            )
 
     def likelihood(self, y_increments, forecast_increments):
         lhds = (
-            y_increments * np.log(self.parameters[0] * forecast_increments)
-            - self.parameters[0] * forecast_increments
+            y_increments * np.log(self.ultimate_losses_exploded * forecast_increments)
+            - self.ultimate_losses_exploded * forecast_increments
         )
         return (1 / self.n) * np.sum(lhds)
 
@@ -131,8 +155,9 @@ class LossDevelopmentCurveModel:
         penalty = 0.5 * np.sum(self.shrinkage * (self.parameters - self.prior_means)**2)
         return neg_log_lik + (1 / self.n) * penalty
 
-    def forecast(self, t):
-        return self.parameters[0] * wb.weibull(t, *self.parameters[1:])
+    def forecast(self, t, group):
+        idx = np.argmax(self.unique_groups == group)
+        return self.ultimate_losses[idx] * wb.weibull(t, *self.parameters)
 
     def forecast_interval(self, t):
         forecast_diffs = np.zeros(len(t))
